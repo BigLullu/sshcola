@@ -1,0 +1,303 @@
+#!/usr/bin/python3
+import sys
+from datetime import datetime
+
+from pexpect import pxssh
+import argparse
+import os
+
+__version__ = "3.0.0"
+
+__last_update_date__ = '2018/08/10'
+
+
+class ResultsContainer:
+    __total_comands_output_list__ = None
+    __error_list__ = None
+    __clean_execution_list__ = None
+
+    def __init__(self):
+        self.__total_comands_output_list__ = []
+        self.__error_list__ = []
+        self.__clean_execution_list__ = []
+        pass
+
+    def add_result(self, line_command, exit_code, output_log, start_date, exit_date):
+        command_line_result = CommandLineResult(line_command, exit_code, output_log, start_date, exit_date)
+        self.__total_comands_output_list__.append(command_line_result)
+        if exit_code == 0:
+            self.__clean_execution_list__.append(command_line_result)
+        else:
+            self.__error_list__.append(command_line_result)
+
+    def __get_enchanted_log_for_commands_result_list__(self, command_result_list: list):
+        total_output = []
+        for command_line_result in command_result_list:
+            comand_output = str(command_line_result)
+            total_output.append(comand_output)
+        return '\n'.join(total_output)
+
+    def get_last_executed_comand(self):
+        return self.__total_comands_output_list__[-1]
+
+    def get_enchanted_full_log(self):
+        return self.__get_enchanted_log_for_commands_result_list__(self.__total_comands_output_list__)
+
+    def get_enchanted_errors_log(self):
+        return self.__get_enchanted_log_for_commands_result_list__(self.__error_list__)
+
+    def get_enchanted_clean_execution_log(self):
+        return self.__get_enchanted_log_for_commands_result_list__(self.__clean_execution_list__)
+
+    def get_errors(self):
+        return self.__error_list__
+
+    def there_is_errors(self):
+        return len(self.__error_list__) != 0
+
+
+class CommandLineResult:
+    __exit_code__ = 0
+    __line_command__ = ''
+    __output_log__ = ''
+    __start_date__ = None
+    __finished_date__ = None
+
+    def __init__(self, line_command, exit_code, output_log, start_date, finished_date):
+        self.__line_command__ = line_command
+        self.__exit_code__ = exit_code
+        self.__output_log__ = output_log
+        self.__start_date__ = start_date
+        self.__finished_date__ = finished_date
+
+    def get_exit_code(self):
+        return self.__exit_code__
+
+    def get_line_command(self):
+        return self.__line_command__
+
+    def get_output_log(self):
+        return self.__output_log__
+
+    def get_start_date(self):
+        return self.__start_date__
+
+    def get_finished_date(self):
+        return self.__finished_date__
+
+    def __str__(self):
+        string_repr = '''{0}\n\tconsole command: {1}\n\texit code: {2}\n\tstarted at : {3}\n\tfinished at: {4}\n{0}'''.format(
+            '*' * 20,
+            self.__line_command__,
+            self.__exit_code__,
+            self.__start_date__.strftime("%Y/%m/%d %H:%M:%S"),
+            self.__finished_date__.strftime("%Y/%m/%d %H:%M:%S")
+        )
+        return string_repr
+
+
+class ScriptExecutionError():
+    __command_line_result_with_error__ = None
+
+    def __init__(self, command_line_result):
+        self.__command_line_result_with_error__ = command_line_result
+
+    def __str__(self):
+        return str(self.__command_line_result_with_error__)
+
+
+def print_step(index, total, out, verbose):
+    smart_out = '\n[{}] # ({}/{}) {}'.format(datetime.now().strftime("%Y/%m/%d %H:%M:%S"), index, total, out)
+    lprint(smart_out, verbose=verbose)
+
+
+def get_last_error_code(pxssh_session, control_character, timeout):
+    pxssh_session.sendline("echo $?")
+    pxssh_session.expect(control_character, timeout)
+    err_cd = pxssh_session.before.split()[-2]
+    return int(err_cd)
+
+
+def get_commands_list(bash_comand: str):
+    commands = bash_comand.split(';')
+    for index, command in enumerate(commands):
+        commands[index] = command.strip()
+    return commands
+
+
+def lprint(to_write='', file=sys.stdout, verbose=False):
+    if verbose:
+        print(to_write, file=file)
+
+
+description_banner = 'SSH COmmand LAuncher for Python3 v{} ({})'.format(str(__version__), __last_update_date__)
+
+description = '\n{0}\n{1}{2}{3}{2}{1}\n{0}\n'.format('#' * (len(description_banner) + 12),
+                                                   '#' * 2,
+                                                   ' ' * 4,
+                                                   description_banner)
+
+lprint(description, verbose=True)
+
+total_steps = 4
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument('-a', type=str, help='REQUIRED: the ssh connection string', required=True)
+
+parser.add_argument('-p', type=str, help='the ssh password', default=22)
+
+parser.add_argument('-i', type=str, help='the used identity file', default=None)
+
+parser.add_argument('-c', type=str, help='REQUIRED: the plain bash comand to execute in double quotes', required=True)
+
+# parser.add_argument('-s', type=str, help='the path to bash script to execute', default=None) See soon in next version :)
+
+parser.add_argument('--failfast', type=bool,
+                    help='enable fail fast mode execution(valid for direct bash execution but not for shell script)',
+                    default=False)
+
+parser.add_argument('--verbose', type=bool,
+                    help='enable fail fast mode execution(valid for direct bash execution but not for shell script)',
+                    default=False)
+
+parser.add_argument('-l', type=str, help='the path to log file for storing output', default=None)
+
+parser.add_argument('-cp', type=str, help='the port to connect')
+
+parser.add_argument('-t', type=int, help='connection timeout')
+
+parser.add_argument('-ct', type=int, help='comand execution timeout default is 60 seconds', default=60)
+
+parser.add_argument('-sm', type=int, help='time multiplier for synching the line beginner character')
+
+parser.add_argument('-lbc', type=str,
+                    help='line beginner character with a proper escape sequences if is a special character',
+                    default="\[[0-9A-Za-z -@#]{0,}[' ']{1,}[0-9A-Za-z -@#]{0,}\]\$")
+
+args = parser.parse_args()
+
+# STEP1: Validate input parameters
+print_step(1, total_steps, 'Parsing input parameters ...', verbose=args.verbose)
+
+out = ''
+total_output = []
+
+line_comand = ''
+
+line_commands = []
+total_errors = {}
+results_container = ResultsContainer()
+last_exit_code = 0
+
+pxssh_session = pxssh.pxssh()
+host = args.a.split('@')[-1]
+port = args.cp if args.cp else 22
+username = '@'.join(args.a.split('@')[:-1])
+password = args.p if args.p else ""
+timeout = args.t if args.t else 10
+ssh_key = args.i if args.i else None
+sync_multiplier = args.sm if (args.sm) else 1
+
+local_log_file = None
+
+pxssh_session.force_password = ssh_key is None
+
+if ssh_key is not None and not os.path.isfile(args.i):
+    raise FileNotFoundError("identity file not exist!!!")
+
+if args.lbc:
+    pxssh_session.PROMPT = args.lbc
+
+lprint('* host=[{}]'.format(host), verbose=args.verbose)
+lprint('* port=[{}]'.format(port), verbose=args.verbose)
+lprint('* username=[{}]'.format(username), verbose=args.verbose)
+lprint('* password=[{}]'.format(password), verbose=args.verbose)
+lprint('* bash command=[{}]'.format(args.c), verbose=args.verbose)
+lprint('* fail fast=[{}]'.format(args.failfast), verbose=args.verbose)
+lprint('* timeout=[{}]'.format(timeout), verbose=args.verbose)
+lprint('* sshKey=[{}]'.format(ssh_key), verbose=args.verbose)
+lprint('* syncMultiplier=[{}]'.format(sync_multiplier), verbose=args.verbose)
+lprint('* logFilName=[{}]'.format(args.l), verbose=args.verbose)
+# print('* bashScriptFileName=[{}]'.format(args.s)) See soon in next version :)
+
+
+# STEP2: Connecting to server
+cmd_out = 'Connecting to server <<username : {} ---- host : {} ----- port : {}>> ...'.format(username, host, str(port))
+print_step(2, total_steps, cmd_out, verbose=args.verbose)
+
+try:
+    pxssh_session.login(host, username, password, port=port, login_timeout=timeout, auto_prompt_reset=False,
+                        sync_multiplier=sync_multiplier, ssh_key=ssh_key)
+except pxssh.ExceptionPxssh as e:
+    lprint('pxssh failed on connect.', verbose=args.verbose)
+    raise e
+
+lprint('Connected successfully!', verbose=args.verbose)
+# STEP3: Receiving data from server
+print_step(3, total_steps, 'Executing remote SSH command ...', verbose=args.verbose)
+
+lprint('===========================================================================================================')
+
+try:
+    line_commands = get_commands_list(str(args.c))
+
+    if args.l:
+        try:
+            local_log_file = open(args.l, 'wb')
+            pxssh_session.logfile_read = local_log_file
+        except Exception as e:
+            lprint("error when opening log file.", verbose=args.verbose)
+            raise e
+
+    sys.stdout.flush()
+    sys.stdout.buffer.flush()
+
+    start_date = None
+    exit_date = None
+    comand_output = ''
+    exit_code = 0
+    for line_command in line_commands:
+        pxssh_session.logfile = sys.stdout.buffer
+        start_date = datetime.now()
+        pxssh_session.sendline(line_command)
+        pxssh_session.expect(args.lbc, args.ct)
+        exit_date = datetime.now()
+        comand_output = pxssh_session.before
+        pxssh_session.logfile = None
+        exit_code = get_last_error_code(pxssh_session, args.lbc, args.ct)
+        decoded_comand = comand_output.decode('ascii')
+        results_container.add_result(line_command, exit_code, decoded_comand, start_date, exit_date)
+        if results_container.there_is_errors() and args.failfast:
+            break
+
+    last_exit_code = exit_code
+
+    sys.stderr.flush()
+    sys.stderr.buffer.flush()
+
+    lprint(file=sys.stderr, verbose=args.verbose)
+    lprint(
+        '===========================================================================================================',
+        file=sys.stderr, verbose=args.verbose)
+    if results_container.there_is_errors():
+        lprint('----------------SCRIPT EXECUTION ERRORS SPOTTED----------------', file=sys.stderr, verbose=args.verbose)
+        enchanted_errors_log = results_container.get_enchanted_errors_log()
+        lprint(enchanted_errors_log, file=sys.stderr, verbose=args.verbose)
+        lprint('---------------------------------------------------------------', file=sys.stderr, verbose=args.verbose)
+
+    lprint(
+        '=============================================== ALL DONE! Thank you! ======================================',
+        verbose=args.verbose)
+
+except Exception as generic_exception:
+    print('some problem occured while attempting to send comand', file=sys.stderr)
+    exception_description = str(e)
+    print('cause:', exception_description, file=sys.stderr)
+finally:
+    # STEP4: Closing connection to Server
+    print_step(4, total_steps, 'Closing connection to server ...', verbose=args.verbose)
+    pxssh_session.logout()
+    if local_log_file is not None:
+        local_log_file.close()
+    exit(last_exit_code)

@@ -1,2 +1,2 @@
 # sshcola
-A python utility for server pivoting via ssh
+A python utility for server pivoting via ssh 
